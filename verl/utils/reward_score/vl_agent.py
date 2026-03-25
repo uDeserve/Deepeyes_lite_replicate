@@ -6,7 +6,8 @@ import os
 
 from math_verify import parse, verify
 
-openai_api_key = "EMPTY"
+openai_api_key = os.environ.get("LLM_AS_A_JUDGE_API_KEY", "EMPTY")
+judge_model_from_env = os.environ.get("LLM_AS_A_JUDGE_MODEL", None)
 openai_api_base_list = [
     # "http://172.30.52.123:8000/v1",
     # "http://10.39.3.123:18901/v1",
@@ -21,10 +22,17 @@ for api_base in openai_api_base_list:
     )
     client_list.append(client)
 model_name_list = []
-for client in client_list:
-    response = requests.get(f"{api_base}/models")
+for api_base in openai_api_base_list:
+    headers = {}
+    if openai_api_key and openai_api_key != "EMPTY":
+        headers["Authorization"] = f"Bearer {openai_api_key}"
+    response = requests.get(f"{api_base}/models", headers=headers, timeout=30)
+    response.raise_for_status()
     models = response.json()
-    model_name_list.append(models['data'][0]['id'])
+    if judge_model_from_env:
+        model_name_list.append(judge_model_from_env)
+    else:
+        model_name_list.append(models["data"][0]["id"])
 
 
 

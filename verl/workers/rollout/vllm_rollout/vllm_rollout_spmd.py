@@ -130,6 +130,16 @@ class vLLMRollout(BaseRollout):
         if config.get("limit_images", None):  # support for multi-image data
             limit_mm_per_prompt = {"image": config.get("limit_images")}
 
+        if self.config.agent.activate_agent and int(self.config.agent.get("max_vllm_images", 0) or 0) > 8:
+            logger.warning(
+                "limit_mm_per_prompt image=%s: vLLM v1 profile_run allocates worst-case vision tokens "
+                "per image; large counts plus FSDP weights on the same GPU often yield "
+                "available_kv_cache_memory<=0 (No available memory for the cache blocks). "
+                "Prefer max_vllm_images<=%s for smoke, or raise rollout.gpu_memory_utilization.",
+                self.config.agent.max_vllm_images,
+                8,
+            )
+
         self.inference_engine = LLM(
             model=model_path,
             enable_sleep_mode=True,
@@ -142,8 +152,7 @@ class vLLMRollout(BaseRollout):
             disable_mm_preprocessor_cache=True,
             # limit_mm_per_prompt=limit_mm_per_prompt,
             skip_tokenizer_init=False,
-            # max_model_len=max_model_len + 16384,
-            max_model_len=32768,
+            max_model_len=max_model_len,
             load_format=load_format,
             disable_log_stats=config.disable_log_stats,
             max_num_batched_tokens=max_num_batched_tokens,

@@ -53,6 +53,8 @@ pip install -e .
 bash scripts/install_deepeyes.sh
 ```
 
+**Local reproduction (Chinese):** RAID layout and `export` snippets for a dedicated `deepeyes/` tree are in [docs/REPRODUCTION_zh.md](docs/REPRODUCTION_zh.md). A full machine-specific checklist (GPUs, conda, hyperparameters, validation order) is maintained in the Cursor plan **DeepEyes 轻量复现** at `~/.cursor/plans/deepeyes_轻量复现_8b85c67c.plan.md` when using Cursor on that host.
+
 ### Start Training
 
 We use [Qwen-2.5-VL-7B-Instruct](https://huggingface.co/Qwen/Qwen2.5-VL-7B-Instruct) as our foundation model for RL training. [Qwen-2.5-VL-32B-Instruct](https://huggingface.co/Qwen/Qwen2.5-VL-32B-Instruct) is also supported.

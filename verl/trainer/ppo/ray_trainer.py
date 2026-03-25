@@ -459,6 +459,7 @@ class RayPPOTrainer:
 
     def _create_dataloader(self):
         # TODO: we have to make sure the batch size is divisible by the dp size
+        print("[verl:RayPPOTrainer] _create_dataloader: begin", flush=True)
         from verl.utils.import_utils import load_extern_type
 
         if "custom_cls" in self.config.data and self.config.data.custom_cls.get("path", None) is not None:
@@ -471,12 +472,14 @@ class RayPPOTrainer:
         else:
             dataset_cls = RLHFDataset
 
+        print("[verl:RayPPOTrainer] building train_dataset ...", flush=True)
         self.train_dataset = dataset_cls(
             data_files=self.config.data.train_files,
             tokenizer=self.tokenizer,
             processor=self.processor,
             config=self.config.data,
         )
+        print("[verl:RayPPOTrainer] train_dataset done", flush=True)
 
         # use sampler for better ckpt resume
         if self.config.data.shuffle:
@@ -486,31 +489,40 @@ class RayPPOTrainer:
         else:
             sampler = SequentialSampler(data_source=self.train_dataset)
 
+        dataloader_num_workers = int(self.config.data.get("dataloader_num_workers", 8))
+        print(
+            f"[verl:RayPPOTrainer] StatefulDataLoader(train) num_workers={dataloader_num_workers} ...",
+            flush=True,
+        )
         self.train_dataloader = StatefulDataLoader(
             dataset=self.train_dataset,
             batch_size=self.config.data.get("gen_batch_size", self.config.data.train_batch_size),
-            num_workers=8,
+            num_workers=dataloader_num_workers,
             drop_last=True,
             collate_fn=collate_fn,
             sampler=sampler,
         )
+        print("[verl:RayPPOTrainer] train_dataloader done", flush=True)
 
+        print("[verl:RayPPOTrainer] building val_dataset ...", flush=True)
         self.val_dataset = dataset_cls(
             data_files=self.config.data.val_files,
             tokenizer=self.tokenizer,
             processor=self.processor,
             config=self.config.data,
         )
+        print("[verl:RayPPOTrainer] val_dataset done", flush=True)
         self.val_dataloader = StatefulDataLoader(
             dataset=self.val_dataset,
             # Validation datasets are sent to inference engines as a whole batch,
             # which will schedule the memory themselves.
             batch_size=len(self.val_dataset),
-            num_workers=8,
+            num_workers=dataloader_num_workers,
             shuffle=False,
             drop_last=False,
             collate_fn=collate_fn,
         )
+        print("[verl:RayPPOTrainer] val_dataloader done", flush=True)
 
         assert len(self.train_dataloader) >= 1
         assert len(self.val_dataloader) == 1, (
@@ -518,7 +530,8 @@ class RayPPOTrainer:
             + " which inference engines will schedule the memory themselves."
         )
 
-        print(f"Size of train dataloader: {len(self.train_dataloader)}")
+        print(f"Size of train dataloader: {len(self.train_dataloader)}", flush=True)
+        print("[verl:RayPPOTrainer] _create_dataloader: end", flush=True)
 
         # inject total_training_steps to actor/critic optim_config. This is hacky.
         total_training_steps = len(self.train_dataloader) * self.config.trainer.total_epochs

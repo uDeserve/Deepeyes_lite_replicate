@@ -15,6 +15,7 @@
 import copy
 import os
 import re
+import sys
 from collections import defaultdict
 from typing import List, Optional, Union
 
@@ -97,27 +98,43 @@ class RLHFDataset(Dataset):
             self.data_files[i] = copy_to_local(src=parquet_file, cache_dir=self.cache_dir)
 
     def _read_files_and_tokenize(self):
+        print(
+            "[verl:RLHFDataset] _read_files_and_tokenize start "
+            f"(HF_DATASETS_CACHE={os.environ.get('HF_DATASETS_CACHE', '')})",
+            flush=True,
+        )
         dataframes = []
         for parquet_file in self.data_files:
-            # read parquet files and cache
+            print(f"[verl:RLHFDataset] load_dataset parquet: {parquet_file}", flush=True)
+            # read parquet files and cache (chmod on cache may fail on NTFS; use HF_DATASETS_CACHE on ext4)
             dataframe = datasets.load_dataset("parquet", data_files=parquet_file)["train"]
             dataframes.append(dataframe)
+        print("[verl:RLHFDataset] concatenate_datasets ...", flush=True)
         self.dataframe: datasets.Dataset = datasets.concatenate_datasets(dataframes)
 
-        print(f"dataset len: {len(self.dataframe)}")
+        print(f"dataset len: {len(self.dataframe)}", flush=True)
 
         # filter out too long prompts
         if self.filter_overlong_prompts:
             tokenizer = self.tokenizer
             prompt_key = self.prompt_key
+            # num_proc=None → single-process filter. Inside a Ray actor, multiprocessing here can hang at
+            # shutdown (tqdm hits 100% but filter never returns). Set filter_overlong_prompts_workers=0 in config.
+            filter_num_proc = self.num_workers if self.num_workers > 0 else None
+            print(
+                f"[verl:RLHFDataset] filter_overlong_prompts num_proc={filter_num_proc} "
+                f"max_prompt_length={self.max_prompt_length}",
+                flush=True,
+            )
             self.dataframe = self.dataframe.filter(
                 lambda doc: len(tokenizer.apply_chat_template(doc[prompt_key], add_generation_prompt=True))
                 <= self.max_prompt_length,
-                num_proc=self.num_workers,
+                num_proc=filter_num_proc,
                 desc=f"Filtering prompts longer than {self.max_prompt_length} tokens",
             )
 
-            print(f"filter dataset len: {len(self.dataframe)}")
+            print(f"filter dataset len: {len(self.dataframe)}", flush=True)
+        sys.stdout.flush()
 
     def resume_dataset_state(self):
         self.serialize_dataset = not hasattr(self, "original_data_files")

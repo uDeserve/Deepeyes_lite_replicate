@@ -194,6 +194,7 @@ class TaskRunner:
         )
         resource_pool_manager = ResourcePoolManager(resource_pool_spec=resource_pool_spec, mapping=mapping)
 
+        print("[verl:TaskRunner] RayPPOTrainer.__init__ (dataloader) starting ...", flush=True)
         trainer = RayPPOTrainer(
             config=config,
             tokenizer=tokenizer,
@@ -204,7 +205,9 @@ class TaskRunner:
             reward_fn=reward_fn,
             val_reward_fn=val_reward_fn,
         )
+        print("[verl:TaskRunner] RayPPOTrainer.__init__ done; calling init_workers() ...", flush=True)
         trainer.init_workers()
+        print("[verl:TaskRunner] init_workers() done; calling fit() ...", flush=True)
         trainer.fit()
 
 

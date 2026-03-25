@@ -12,7 +12,8 @@ data:
   return_raw_chat: False
   shuffle: True
   filter_overlong_prompts: False # for large-scale dataset, filtering overlong prompts could be timeconsuming. You cat set the filter_overlong_prompts_workers to use multiprocessing to speed up.
-  filter_overlong_prompts_workers: 1
+  filter_overlong_prompts_workers: 1 # set to 0 for single-process filter (recommended inside Ray TaskRunner to avoid post-filter hangs)
+  dataloader_num_workers: 8 # set to 0 when running PPO driver logic inside a Ray actor (fork + Ray/CUDA unsafe)
   truncation: error
   image_key: images
   video_key: videos
