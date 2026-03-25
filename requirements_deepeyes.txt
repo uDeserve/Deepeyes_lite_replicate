@@ -67,7 +67,7 @@ fastapi-cli==0.0.7
 fastrlock==0.8.3
 fbgemm_gpu==1.0.0+cu121
 filelock==3.16.1
-flash-attn==2.7.0.post2
+flash-attn==2.8.3
 frozendict==2.4.6
 frozenlist==1.5.0
 fsspec==2024.2.0
