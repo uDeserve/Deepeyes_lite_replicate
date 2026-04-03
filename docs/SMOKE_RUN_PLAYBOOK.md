@@ -288,6 +288,9 @@ bash examples/agent/local_smoke_4gpu.sh
 | 阶段日志 | 已合入仓库，便于定位卡点 |
 | `max_vllm_images` 过大导致 vLLM profile / KV 初始化问题 | 已 **部分** 通过冒烟参数与代码 **warning** 处理；机制与 vLLM 源码对照一致 |
 | 二卡 agent + FSDP + vLLM 全流程冒烟 | **截至本记录编写未在共享 GPU 环境下验证通过**；失败形态含 **KV 预算非正**、**cumem wake OOM**、**PyTorch OOM** |
+| 四卡 agent + FSDP + vLLM 全流程冒烟（2026-04-02） | **OOM失败**；FSDP actor(~14GB/卡) + ref(~7GB/卡) + vLLM(~30GB/卡) + KV cache 超过48GB/卡；见 §10 |
+| 四卡保守配置冒烟（2026-04-02） | **vLLM KV初始化失败**；显存利用率 0.68 时报错 "No available memory for cache blocks"；见 §11 |
+| 二卡冒烟（2026-04-02） | **vLLM KV初始化失败**；同门进程占用GPU 0 导致可用显存不足；见 §11 |
 
 ---
 
@@ -300,3 +303,186 @@ bash examples/agent/local_smoke_4gpu.sh
 - `logs/nohup_smoke_2gpu_20260325_165729.log`：后续尝试中 **PyTorch OOM** 与多进程占显存信息出现在同一会话分析中。
 
 以上文件是否仍保留在磁盘上取决于本机清理策略；**以当时拷贝或 Git 无关**。
+
+---
+
+## 10. 2026-04-02 首次4卡冒烟失败（客观记录）
+
+本节记录 **Trae AI IDE 环境下首次4卡冒烟测试** 的完整过程：**现象、配置、错误、环境状态**。
+
+### 10.1 环境状态
+
+| 项目 | 状态 |
+|------|------|
+| GPU | 7×RTX 4090，每卡48GB，训练前几乎空闲（~18 MiB占用） |
+| torch | 2.6.0+cu124 |
+| vLLM | 0.8.2 |
+| flash_attn | 2.7.2.post1 |
+| verl | 0.2.0.dev |
+| tensordict | 0.6.2 |
+| Python路径 | 需显式 `export PATH="/data/lsj/deepeyes/conda_env/bin:$PATH"` |
+| HF_DATASETS_CACHE | `/data/lsj/deepeyes/hf_datasets_cache`（ext4） |
+| Judge API | `https://yunwu.ai/v1`，API Key临时设为 `sk-123456` |
+
+### 10.2 启动命令
+
+```bash
+source ~/deepeyes_raid_env.sh
+export PATH="/data/lsj/deepeyes/conda_env/bin:$PATH"
+export CUDA_VISIBLE_DEVICES=0,1,2,3
+export WORLD_SIZE=1
+export LLM_AS_A_JUDGE_BASE="https://yunwu.ai/v1"
+export LLM_AS_A_JUDGE_API_KEY="sk-123456"
+export LLM_AS_A_JUDGE_MODEL="qwen3.5-plus"
+cd /home/lsj/zyw/DeepEyes
+bash examples/agent/local_smoke_4gpu.sh 2>&1 | tee "./logs/smoke_4gpu_$(date +%Y%m%d_%H%M%S).log"
+```
+
+### 10.3 关键配置参数（local_smoke_4gpu.sh）
+
+| 参数 | 值 | 说明 |
+|------|-----|------|
+| `trainer.n_gpus_per_node` | 4 | 使用4卡 |
+| `data.train_batch_size` | 16 | |
+| `data.max_prompt_length` | 4096 | |
+| `data.max_response_length` | 4096 | |
+| `actor_rollout_ref.actor.ppo_mini_batch_size` | 16 | |
+| `actor_rollout_ref.rollout.gpu_memory_utilization` | 0.82 | 82%显存 |
+| `actor_rollout_ref.rollout.agent.max_vllm_images` | 8 | |
+| `actor_rollout_ref.rollout.n` | 2 | 每个prompt采样2次 |
+| `actor_rollout_ref.rollout.enable_chunked_prefill` | False | |
+| `data.filter_overlong_prompts_workers` | 0 | 单进程过滤 |
+| `data.dataloader_num_workers` | 0 | |
+
+### 10.4 运行阶段日志
+
+| 时间 | 现象 |
+|------|------|
+| 启动 | Ray TaskRunner初始化，配置打印完成 |
+| ~20:49 | 模型分片加载（5个shard，每个~14GB） |
+| ~20:50 | NCCL初始化完成，Flash Attention警告（可忽略） |
+| ~20:52 | FSDP wrap policy设置，vLLM开始profile |
+| ~20:52 | Token序列长度警告：`147456 > 131072` |
+| ~20:53 | vLLM profile完成，开始分配KV cache |
+| ~20:54 | **OOM崩溃** |
+
+### 10.5 显存变化过程
+
+| 时刻 | GPU 0 | GPU 1 | GPU 2 | GPU 3 |
+|------|-------|-------|-------|-------|
+| 训练前 | 22 MiB | 22 MiB | 22 MiB | 22 MiB |
+| 模型加载后 | 22 MiB | 476 MiB | 476 MiB | 476 MiB |
+| FSDP初始化 | 28394 MiB | 24860 MiB | 28772 MiB | 29366 MiB |
+| vLLM KV分配 | 48412 MiB | 48188 MiB | 37580 MiB | 37580 MiB |
+| **最终** | **OOM** | | | |
+
+### 10.6 错误信息
+
+```
+RuntimeError: CUDA Error: out of memory at /workspace/csrc/cumem_allocator.cpp:62
+
+堆栈：
+  File "vllm/device_allocator/cumem.py", line 214, in wake_up
+    create_and_map(handle)
+  File "vllm/device_allocator/cumem.py", line 76, in create_and_map
+    python_create_and_map(*allocation_handle)
+```
+
+### 10.7 主观经验
+
+1. **根因分析**：FSDP actor模型(~28GB) + FSDP ref模型(~14GB) + vLLM rollout(~30GB) + KV cache预算 **同时占用超过48GB**，在vLLM尝试wake_up分配额外KV cache时触发OOM。
+
+2. **4卡配置显存占用估算**：
+   - Actor (FSDP): ~14GB/卡
+   - Ref (FSDP): ~7GB/卡
+   - vLLM + KV: ~30GB/卡
+   - **总计**: ~51GB/卡 > 48GB
+
+3. **与playbook记录的二卡失败现象一致**：`cumem wake_up OOM` 正是之前二卡测试中遇到的同类问题。
+
+4. **可能的解决方向**：
+   - 降低 `gpu_memory_utilization` 至 0.68-0.70
+   - 降低 `max_vllm_images` 至 4
+   - 减小 `train_batch_size` 和 `ppo_mini_batch_size`
+   - 开启 `enable_chunked_prefill=True`
+   - 或改用 **2卡保守配置**
+
+### 10.8 相关日志文件
+
+- `logs/smoke_4gpu_subset512.log`：本次4卡冒烟的完整日志（含OOM堆栈）
+- 冒烟脚本已在仓库中，路径：`examples/agent/local_smoke_4gpu.sh`
+
+---
+
+## 11. 2026-04-02 保守配置尝试记录
+
+### 11.1 4卡保守配置（local_smoke_4gpu_conservative.sh）
+
+基于第一次4卡OOM失败，降低了以下参数：
+
+| 参数 | 原值 | 新值 |
+|------|------|------|
+| `train_batch_size` | 16 | 8 |
+| `max_prompt_length` | 4096 | 2048 |
+| `max_response_length` | 4096 | 2048 |
+| `ppo_mini_batch_size` | 16 | 8 |
+| `gpu_memory_utilization` | 0.82 | 0.68 |
+| `max_vllm_images` | 8 | 4 |
+| `enable_chunked_prefill` | False | True |
+| `rollout.n` | 2 | 1 |
+
+**结果**：数据管线通过，但vLLM KV初始化阶段失败：
+```
+ValueError: No available memory for the cache blocks. 
+Try increasing `gpu_memory_utilization` when initializing the engine.
+```
+
+### 11.2 2卡冒烟配置（local_smoke_2gpu_gpu56.sh）
+
+使用GPU 5和6，配置如下：
+
+| 参数 | 值 |
+|------|-----|
+| `trainer.n_gpus_per_node` | 2 |
+| `gpu_memory_utilization` | 0.68 |
+| `max_vllm_images` | 4 |
+| `max_prompt_length` | 2048 |
+| `max_response_length` | 2048 |
+
+**结果**：同样在vLLM KV初始化阶段失败。
+
+### 11.3 根因分析
+
+通过 `nvidia-smi --query-compute-apps` 发现同门（fzx用户）有Python进程占用GPU：
+
+| PID | 进程 | 占用显存 |
+|-----|------|----------|
+| 70871 | collect_data.py | 5.3 GB |
+| 76330 | collect_data.py | 2.2 GB |
+
+**GPU 0** 总占用 ~7GB，导致vLLM无法分配足够的KV cache。
+
+### 11.4 经验总结
+
+1. **4卡OOM vs vLLM KV初始化失败**：两种错误都是显存问题，但原因不同
+   - OOM：FSDP + vLLM + KV 总需求超过48GB
+   - KV初始化失败：FSDP分片后单卡显存碎片化 + 外部进程占用
+
+2. **GPU隔离建议**：
+   - 冒烟测试前用 `nvidia-smi --query-compute-apps` 确认GPU空闲
+   - 与同门协商GPU分配，或使用空闲GPU编号
+
+3. **可能的解决方向**：
+   - 等待同门释放GPU 0
+   - 或选择其他空闲GPU（当前GPU 1-6大部分空闲）
+   - 或进一步降低 `gpu_memory_utilization` 到 0.50-0.55
+
+### 11.5 新增脚本
+
+- `examples/agent/local_smoke_4gpu_conservative.sh`：4卡保守配置
+- `examples/agent/local_smoke_4gpu_ultra_conservative.sh`：4卡极保守配置（未测试）
+
+### 11.6 相关日志文件
+
+- `logs/smoke_4gpu_conservative_20260402_211930.log`：保守配置4卡尝试
+- `logs/smoke_2gpu_conservative_20260402_214550.log`：2卡尝试
